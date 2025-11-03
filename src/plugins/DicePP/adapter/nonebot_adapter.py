@@ -226,6 +226,14 @@ async def handle_command(bot: NoneBot, event: MessageEvent):
     if isinstance(event, GroupMessageEvent):
         group_id = str(event.group_id)
 
+    # Ignore messages sent by the bot itself to avoid echo loops
+    try:
+        if user_id == bot.self_id:
+            dice_log(f"[Proxy Message] ignore self message from {user_id}")
+            return
+    except Exception:
+        pass
+
     # log_str = f"[Proxy Message] Bot \033[0;37m{bot.self_id}\033[0m receive message \033[0;33m{raw_msg}\033[0m from "
     # if group_id:
     #     log_str += f"\033[0;34m|Group: {group_id} User: {user_id}|\033[0m"

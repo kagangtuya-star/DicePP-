@@ -364,10 +364,44 @@ class InitiativeCommand(UserCommandBase):
                 entity: InitEntity = entity
                 # 生命值信息
                 entity_hp_info: str = ""
+                # Defensive: hp_dict may contain raw dict/str/int; normalize on-the-fly if needed
+                def _hp_info_from_val(val):
+                    try:
+                        if isinstance(val, HPInfo):
+                            return val.get_info()
+                        # try reconstructing HPInfo from dict or JSON string
+                        hp_obj = HPInfo()
+                        if isinstance(val, dict):
+                            hp_obj.deserialize(json.dumps(val))
+                            return hp_obj.get_info()
+                        if isinstance(val, str):
+                            try:
+                                parsed = json.loads(val)
+                                if isinstance(parsed, dict):
+                                    hp_obj.deserialize(json.dumps(parsed))
+                                    return hp_obj.get_info()
+                                elif isinstance(parsed, int):
+                                    hp_obj.initialize(parsed, parsed)
+                                    return hp_obj.get_info()
+                                else:
+                                    return str(val)
+                            except Exception:
+                                # not JSON, try plain int
+                                try:
+                                    v = int(val)
+                                    hp_obj.initialize(v, v)
+                                    return hp_obj.get_info()
+                                except Exception:
+                                    return str(val)
+                        # other primitives: just stringify
+                        return str(val)
+                    except Exception:
+                        return str(val)
+
                 if entity.owner and entity.owner in hp_dict:  # 玩家HP信息
-                    entity_hp_info = f"{hp_dict[entity.owner].get_info()}"
+                    entity_hp_info = _hp_info_from_val(hp_dict[entity.owner])
                 if not entity.owner and entity.name in hp_dict:  # NPC信息
-                    entity_hp_info = f"{hp_dict[entity.name].get_info()}"
+                    entity_hp_info = _hp_info_from_val(hp_dict[entity.name])
                 init_info += f"{index + 1}.{entity.get_info()} {entity_hp_info}\n"
             init_info = init_info.strip()  # 去掉末尾的换行
             feedback = self.format_loc(LOC_INIT_INFO, init_info=init_info)
