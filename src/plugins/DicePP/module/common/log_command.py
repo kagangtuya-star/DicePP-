@@ -148,6 +148,8 @@ CFG_LOG_UPLOAD_TOKEN = "log_upload_token"
 # 限制单个日志在内存中保留的最大记录条数（可通过配置覆盖）。
 CFG_LOG_MAX_RECORDS = "log_max_records"
 LOG_MAX_RECORDS_DEFAULT = 5000
+# 在启用数据库存储后，内存侧仅保留少量最新记录作为保险，避免深拷贝过大数据。
+LOG_IN_MEMORY_SAFE_LIMIT = 50
 
 
 def _pick_color(color_map: Dict[str, str], user_id: str) -> str:
@@ -536,10 +538,11 @@ def _trim_records_if_needed(bot: Bot, entry: Dict[str, Any]) -> None:
         limit = int(str(cfg_val).strip())
     except Exception:
         limit = LOG_MAX_RECORDS_DEFAULT
-    if limit is None:
-        return
-    if limit <= 0:
-        # -1 或 0 代表不限制（不建议在长期运行环境使用）
+    # 强制收敛至安全上限，确保 DataManager 深拷贝时不会携带过多记录。
+    if LOG_IN_MEMORY_SAFE_LIMIT > 0:
+        if limit <= 0 or limit > LOG_IN_MEMORY_SAFE_LIMIT:
+            limit = LOG_IN_MEMORY_SAFE_LIMIT
+    if limit is None or limit <= 0:
         return
     records = entry.get(LOG_KEY_RECORDS, [])
     cur_len = len(records)
