@@ -150,6 +150,12 @@ CFG_LOG_MAX_RECORDS = "log_max_records"
 LOG_MAX_RECORDS_DEFAULT = 5000
 # 在启用数据库存储后，内存侧仅保留少量最新记录作为保险，避免深拷贝过大数据。
 LOG_IN_MEMORY_SAFE_LIMIT = 50
+# 内存中 stats.participants 字典最大条目数，超出将保留最活跃的用户
+LOG_PARTICIPANTS_LIMIT = 500
+# 内存中 color_map 字典最大条目数
+LOG_COLOR_MAP_LIMIT = 500
+# 每个骰面类型在 dice_faces.users 中保留的最大用户数
+LOG_DICE_USERS_LIMIT = 100
 
 
 def _pick_color(color_map: Dict[str, str], user_id: str) -> str:
@@ -555,6 +561,62 @@ def _trim_records_if_needed(bot: Bot, entry: Dict[str, Any]) -> None:
             entry[LOG_KEY_RECORDS] = records
 
 
+def _trim_stats_if_needed(entry: Dict[str, Any]) -> None:
+    """裁剪 stats 中的 participants 和 dice_faces.users，避免无限增长。"""
+    stats = entry.get(LOG_KEY_STATS)
+    if not isinstance(stats, dict):
+        return
+
+    # 1) 裁剪 participants：保留消息数最多的用户
+    participants = stats.get("participants")
+    if isinstance(participants, dict) and len(participants) > LOG_PARTICIPANTS_LIMIT:
+        sorted_items = sorted(
+            participants.items(),
+            key=lambda x: x[1].get("count", 0) if isinstance(x[1], dict) else 0,
+            reverse=True
+        )[:LOG_PARTICIPANTS_LIMIT]
+        stats["participants"] = dict(sorted_items)
+
+    # 2) 裁剪 dice_faces.users：每个骰面保留掷骰次数最多的用户
+    dice_faces = stats.get("dice_faces")
+    if isinstance(dice_faces, dict):
+        for face, face_info in dice_faces.items():
+            if not isinstance(face_info, dict):
+                continue
+            users = face_info.get("users")
+            if isinstance(users, dict) and len(users) > LOG_DICE_USERS_LIMIT:
+                sorted_users = sorted(
+                    users.items(),
+                    key=lambda x: x[1].get("count", 0) if isinstance(x[1], dict) else 0,
+                    reverse=True
+                )[:LOG_DICE_USERS_LIMIT]
+                face_info["users"] = dict(sorted_users)
+
+
+def _trim_color_map_if_needed(entry: Dict[str, Any]) -> None:
+    """裁剪 color_map，避免无限增长。保留活跃用户的颜色映射。"""
+    color_map = entry.get(LOG_KEY_COLOR_MAP)
+    if not isinstance(color_map, dict) or len(color_map) <= LOG_COLOR_MAP_LIMIT:
+        return
+
+    # 优先保留 participants 中存在的用户
+    stats = entry.get(LOG_KEY_STATS, {})
+    participants = stats.get("participants", {}) if isinstance(stats, dict) else {}
+    active_users = set(participants.keys())
+
+    new_map: Dict[str, str] = {}
+    # 先添加活跃用户
+    for uid in active_users:
+        if uid in color_map and len(new_map) < LOG_COLOR_MAP_LIMIT:
+            new_map[uid] = color_map[uid]
+    # 再填充其他（按原顺序）
+    for uid, color in color_map.items():
+        if uid not in new_map and len(new_map) < LOG_COLOR_MAP_LIMIT:
+            new_map[uid] = color
+
+    entry[LOG_KEY_COLOR_MAP] = new_map
+
+
 def _should_filter(filters: Dict[str, bool], content: str, *, is_bot: bool) -> bool:
     text = (content or "").strip()
     if filters.get(FILTER_OUTSIDE) and (
@@ -845,6 +907,9 @@ def record_incoming_message(bot: Bot,
     _append_record_to_db(group_id, current_id, entry, record, source_is_bot=is_bot)
     # 不再堆积内存 records，仅保留统计；裁剪留作安全网（不会影响）
     _trim_records_if_needed(bot, entry)
+    # 裁剪 stats 和 color_map，防止无限增长
+    _trim_stats_if_needed(entry)
+    _trim_color_map_if_needed(entry)
     payload[LOG_GROUP_LOGS][current_id] = entry
     _save_group_payload(bot, group_id, payload)
     return commands
