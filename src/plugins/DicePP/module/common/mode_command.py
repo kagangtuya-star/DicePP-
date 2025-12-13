@@ -1,6 +1,7 @@
 from typing import Dict, Optional, List, Tuple, Any
 import openpyxl
 import os
+import re
 
 from core.bot import Bot
 from core.data import DataChunkBase, custom_data_chunk, DC_USER_DATA
@@ -11,6 +12,7 @@ from core.communication import MessageMetaData, PrivateMessagePort, GroupMessage
 from core.config import DATA_PATH
 from module.common import DC_GROUPCONFIG
 from core.localization import LOC_PERMISSION_DENIED_NOTICE, LOC_FUNC_DISABLE
+from module.query.query_database import CONNECTED_QUERY_DATABASES
 
 LOC_MODE_SWITCH = "mode_switch"
 LOC_MODE_INVALID = "mode_invalid"
@@ -18,6 +20,8 @@ LOC_MODE_NOT_EXIST = "mode_not_exist"
 LOC_MODE_LIST = "mode_list"
 LOC_MODE_LIKELY = "mode_likely"
 LOC_MODE_CURRENT = "mode_current"
+LOC_MODE_DB_MATCH = "mode_db_match"
+LOC_MODE_DB_MULTI_MATCH = "mode_db_multi_match"
 
 CFG_MODE_ENABLE = "mode_enable"
 CFG_MODE_DEFAULT = "mode_default"
@@ -59,6 +63,8 @@ class ModeCommand(UserCommandBase):
         bot.loc_helper.register_loc_text(
             LOC_MODE_LIKELY, "找到多个选项，你要找的是不是：{modes}", "。mode模式指令，模糊匹配出现多个结果\nmodes：模糊匹配结果列表")
         bot.loc_helper.register_loc_text(LOC_MODE_CURRENT, "当前模式为{new_mode}（默认{dice}面骰点，查询数据库使用{database}.db（如果有））。", ".mode 不带参数时显示当前模式")
+        bot.loc_helper.register_loc_text(LOC_MODE_DB_MATCH, "已自动匹配到数据库{database}（默认{dice}面骰点）。", ".mode自动匹配数据库时返回")
+        bot.loc_helper.register_loc_text(LOC_MODE_DB_MULTI_MATCH, "找到多个匹配的数据库：{databases}，请使用更精确的名称。", ".mode自动匹配到多个数据库时返回")
 
         bot.cfg_helper.register_config(CFG_MODE_ENABLE, "1", "模式指令开关")
         bot.cfg_helper.register_config(CFG_MODE_DEFAULT, "DND5E2024", "群内默认模式")
@@ -212,9 +218,38 @@ class ModeCommand(UserCommandBase):
                 self.bot.data_manager.set_data(
                     dc, [tid, setting[index]], true_var)
 
+        def guess_default_dice(db_name: str) -> str:
+            """根据数据库名称猜测默认骰面"""
+            db_upper = db_name.upper()
+            # COC 系列 -> D100
+            if re.search(r'COC', db_upper):
+                return "100"
+            # 忍神 / Shinobigami -> 2D6
+            if '忍神' in db_name or re.search(r'SHINOBI', db_upper):
+                return "2D6"
+            # DND / PF / SF / SW 系列 -> D20
+            if re.search(r'(DND|D&D|PF|PATHFINDER|SF|STARFINDER|SW|STARWARS)', db_upper):
+                return "20"
+            # 默认使用D20
+            return "20"
+
+        def find_matching_databases(query: str) -> List[str]:
+            """在已连接数据库中查找匹配项"""
+            query_upper = query.upper()
+            results: List[str] = []
+            for db_name in CONNECTED_QUERY_DATABASES.keys():
+                db_upper = db_name.upper()
+                # 精确匹配（忽略大小写）
+                if db_upper == query_upper:
+                    return [db_name]  # 精确匹配直接返回
+                # 模糊匹配：查询字符串是数据库名的子串
+                if query_upper in db_upper:
+                    results.append(db_name)
+            return results
+
         matched = False
         feedback = ""
-        # 尝试精准匹配
+        # 尝试精准匹配预定义模式
         for key in self.mode_dict.keys():
             ukey = key.upper()
             if ukey == mode:  # 精准匹配
@@ -223,7 +258,7 @@ class ModeCommand(UserCommandBase):
                 feedback = self.bot.loc_helper.format_loc_text(
                     LOC_MODE_SWITCH, new_mode=key, dice=self.mode_dict[key][0], database=self.mode_dict[key][1])
                 matched = True
-        # 尝试模糊匹配
+        # 尝试模糊匹配预定义模式
         if not matched:
             result: List[str] = []
             for key in self.mode_dict.keys():
@@ -233,6 +268,7 @@ class ModeCommand(UserCommandBase):
             if len(result) > 1:
                 feedback = self.bot.loc_helper.format_loc_text(
                     LOC_MODE_LIKELY, modes="、".join(result))
+                matched = True  # 有多个候选，不继续尝试数据库匹配
             elif len(result) == 1:
                 key_upper = result[0]
                 # 找到原始 key 名称（mode_dict 的键）
@@ -241,15 +277,32 @@ class ModeCommand(UserCommandBase):
                     if k.upper() == key_upper:
                         orig_key = k
                         break
-                if orig_key is None:
-                    feedback = self.bot.loc_helper.format_loc_text(LOC_MODE_NOT_EXIST)
-                else:
+                if orig_key is not None:
                     update_group_config(target_id, self.mode_field, [
                                         orig_key]+self.mode_dict[orig_key], is_private_inner=is_private)
                     feedback = self.bot.loc_helper.format_loc_text(
                         LOC_MODE_SWITCH, new_mode=orig_key, dice=self.mode_dict[orig_key][0], database=self.mode_dict[orig_key][1])
                     matched = True
+
+        # 如果预定义模式未匹配，尝试匹配已加载的数据库
+        if not matched:
+            db_matches = find_matching_databases(mode)
+            if len(db_matches) == 1:
+                # 唯一匹配，创建动态模式
+                db_name = db_matches[0]
+                dice = guess_default_dice(db_name)
+                update_group_config(target_id, self.mode_field, [
+                                    mode, dice, db_name], is_private_inner=is_private)
+                feedback = self.bot.loc_helper.format_loc_text(
+                    LOC_MODE_DB_MATCH, database=db_name, dice=dice)
+                matched = True
+            elif len(db_matches) > 1:
+                # 多个匹配，提示用户选择
+                feedback = self.bot.loc_helper.format_loc_text(
+                    LOC_MODE_DB_MULTI_MATCH, databases="、".join(db_matches))
+                matched = True
             else:
+                # 没有找到任何匹配
                 feedback = self.bot.loc_helper.format_loc_text(
                     LOC_MODE_NOT_EXIST) + self.bot.loc_helper.format_loc_text(LOC_MODE_LIST, modes="、".join(self.mode_dict.keys()))
 
