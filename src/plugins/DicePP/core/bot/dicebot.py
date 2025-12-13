@@ -11,6 +11,7 @@ from core.localization import LocalizationManager, LOC_GROUP_ONLY_NOTICE, LOC_PE
 from core.config import ConfigManager, CFG_COMMAND_SPLIT, CFG_MASTER, CFG_FRIEND_TOKEN, CFG_GROUP_INVITE
 from core.config import CFG_DATA_EXPIRE, CFG_USER_EXPIRE_DAY, CFG_GROUP_EXPIRE_DAY, CFG_GROUP_EXPIRE_WARNING,\
     CFG_WHITE_LIST_GROUP, CFG_WHITE_LIST_USER, CFG_ADMIN, CFG_MASTER, preprocess_white_list
+from core.config import CFG_MEMORY_MONITOR_ENABLE, CFG_MEMORY_WARN_PERCENT, CFG_MEMORY_RESTART_PERCENT, CFG_MEMORY_RESTART_MB
 from core.config import BOT_DATA_PATH, CONFIG_PATH
 from core.communication import MessageMetaData, MessagePort, PrivateMessagePort, GroupMessagePort, preprocess_msg
 from core.communication import RequestData, FriendRequestData, JoinGroupRequestData, InviteGroupRequestData
@@ -28,6 +29,13 @@ import shutil
 # 日志清理相关常量
 LOGS_SUBDIR = "logs"
 LOG_RETENTION_SECONDS = 24 * 3600  # 24小时
+
+# 内存监控
+try:
+    import psutil
+    PSUTIL_AVAILABLE = True
+except ImportError:
+    PSUTIL_AVAILABLE = False
 
 NICKNAME_ERROR = "UNDEF_NAME"
 
@@ -119,6 +127,8 @@ class Bot:
                         await self.tick_daily(bot_commands)
                     # 保存数据到本地
                     await self.data_manager.save_data_async()
+                    # 内存监控检查
+                    await self._check_memory_and_handle()
                     # 更新计时器
                     time_counter[0] = loop_begin_time
 
@@ -190,6 +200,63 @@ class Bot:
                         del self.todo_tasks[task]
         except Exception:
             dice_log(str(self.handle_exception(f"Async Task: CODE112")[0]))
+
+    async def _check_memory_and_handle(self) -> None:
+        """内存监控：检查内存使用情况，必要时发送警告或触发重启"""
+        if not PSUTIL_AVAILABLE:
+            return
+        try:
+            enable = int(self.cfg_helper.get_config(CFG_MEMORY_MONITOR_ENABLE)[0])
+            if not enable:
+                return
+        except Exception:
+            return
+
+        status = self.get_memory_status()
+        if not status:
+            return
+
+        rss_mb = status["rss_mb"]
+        percent = status["percent"]
+        
+        try:
+            warn_pct = int(self.cfg_helper.get_config(CFG_MEMORY_WARN_PERCENT)[0])
+            restart_pct = int(self.cfg_helper.get_config(CFG_MEMORY_RESTART_PERCENT)[0])
+            restart_mb = int(self.cfg_helper.get_config(CFG_MEMORY_RESTART_MB)[0])
+        except Exception:
+            warn_pct, restart_pct, restart_mb = 80, 90, 2048
+
+        if percent >= restart_pct or rss_mb >= restart_mb:
+            msg = f"⚠️ 内存超限，正在自动重启\n当前: {rss_mb:.0f}MB ({percent:.1f}%)\n阈值: {restart_pct}% 或 {restart_mb}MB"
+            dice_log(f"[MemoryMonitor] 内存超限，触发自动重启: {rss_mb:.0f}MB ({percent:.1f}%)")
+            await self.send_msg_to_master(msg)
+            await asyncio.sleep(2)
+            self.reboot()
+        elif percent >= warn_pct:
+            msg = f"⚠️ 内存使用较高\n当前: {rss_mb:.0f}MB ({percent:.1f}%)\n警告阈值: {warn_pct}%\n建议关注运行状态"
+            dice_log(f"[MemoryMonitor] 内存警告: {rss_mb:.0f}MB ({percent:.1f}%)")
+            # 避免频繁警告，这里只记录日志，Master消息由用户手动查询
+            # await self.send_msg_to_master(msg)
+
+    def get_memory_status(self) -> Optional[Dict]:
+        """获取当前内存使用状态，返回 None 表示无法获取"""
+        if not PSUTIL_AVAILABLE:
+            return None
+        try:
+            process = psutil.Process()
+            mem_info = process.memory_info()
+            rss_mb = mem_info.rss / (1024 * 1024)
+            vm = psutil.virtual_memory()
+            total_mb = vm.total / (1024 * 1024)
+            percent = (rss_mb / total_mb) * 100
+            return {
+                "rss_mb": rss_mb,
+                "total_mb": total_mb,
+                "percent": percent,
+                "system_percent": vm.percent,
+            }
+        except Exception:
+            return None
 
     async def tick_daily(self, bot_commands):
         # 更新用户统计
@@ -274,8 +341,41 @@ class Bot:
         dice_log("[Bot] [Reboot] 开始重启")
         await self.shutdown_async()
         import sys
+        import platform
+        
         python = sys.executable
-        os.execl(python, python, *sys.argv)
+        cwd = os.getcwd()
+        
+        # 记录重启信息用于调试
+        dice_log(f"[Bot] [Reboot] Python: {python}")
+        dice_log(f"[Bot] [Reboot] Args: {sys.argv}")
+        dice_log(f"[Bot] [Reboot] CWD: {cwd}")
+        
+        if platform.system() == "Windows":
+            # Windows: 使用 subprocess 启动新进程，然后退出当前进程
+            import subprocess
+            dice_log("[Bot] [Reboot] Windows 模式：启动新进程后退出")
+            try:
+                # 保留环境变量（包括虚拟环境的 PATH）
+                env = os.environ.copy()
+                subprocess.Popen(
+                    [python] + sys.argv,
+                    cwd=cwd,
+                    env=env,
+                    creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,
+                )
+            except Exception as e:
+                dice_log(f"[Bot] [Reboot] 启动新进程失败: {e}")
+                # 回退到简单方式
+                subprocess.Popen([python] + sys.argv, cwd=cwd)
+            await asyncio.sleep(1)
+            os._exit(0)
+        else:
+            # Linux/macOS: 使用 os.execl 替换当前进程
+            dice_log("[Bot] [Reboot] Unix 模式：execl 替换进程")
+            # 切换到原始工作目录
+            os.chdir(cwd)
+            os.execl(python, python, *sys.argv)
         # self.start_up()
         # await self.delay_init_command()
 
