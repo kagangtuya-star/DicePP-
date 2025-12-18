@@ -442,7 +442,40 @@ class QueryCommand(UserCommandBase):
             if not should_proc and msg_str.startswith(f".{key}"):
                 should_proc, mode, arg_str = True, "database", msg_str[1 + len(key):].strip()
         
-        if meta.permission >= 3:# 需要3级权限（群管理/骰主）才能编辑资料库
+        # 数据库子指令解析不依赖权限：低权限用户也应得到明确的“无权限”反馈，而不是帮助文本
+        if mode == "database":
+            if arg_str.startswith("加载"):
+                arg_str = arg_str[2:].strip()
+                show_mode = 1  # 加载模式
+            elif arg_str.startswith("load"):
+                arg_str = arg_str[4:].strip()
+                show_mode = 1  # 加载模式
+            elif arg_str.startswith("卸载"):
+                arg_str = arg_str[2:].strip()
+                show_mode = 2  # 卸载模式
+            elif arg_str.startswith("disload"):
+                arg_str = arg_str[7:].strip()
+                show_mode = 2  # 卸载模式
+            elif arg_str.startswith("创建"):
+                arg_str = arg_str[2:].strip()
+                show_mode = 3  # 创建模式
+            elif arg_str.startswith("create"):
+                arg_str = arg_str[6:].strip()
+                show_mode = 3  # 创建模式
+            elif arg_str.startswith("导入"):
+                arg_str = arg_str[2:].strip()
+                show_mode = 4  # 导入模式
+            elif arg_str.startswith("import"):
+                arg_str = arg_str[6:].strip()
+                show_mode = 4  # 导入模式
+            elif arg_str.startswith("列表"):
+                arg_str = arg_str[2:].strip()
+                show_mode = 5  # 显示模式
+            elif arg_str.startswith("list"):
+                arg_str = arg_str[4:].strip()
+                show_mode = 5  # 显示模式
+
+        if meta.permission >= 3:# 需要3级权限（骰管理/骰主）才能编辑资料库
             if mode == "redirect":
                 if arg_str.startswith("删除"):
                     arg_str = arg_str[2:].strip()
@@ -471,37 +504,6 @@ class QueryCommand(UserCommandBase):
                     arg_str = (meta.plain_msg.split("创建",1)[1]).strip()
                     show_mode = 9 # 编辑模式
                     should_proc, mode= True, "new"
-            elif mode == "database":
-                if arg_str.startswith("加载"):
-                    arg_str = arg_str[2:].strip()
-                    show_mode = 1 # 加载模式
-                elif arg_str.startswith("load"):
-                    arg_str = arg_str[4:].strip()
-                    show_mode = 1 # 加载模式
-                elif arg_str.startswith("卸载"):
-                    arg_str = arg_str[2:].strip()
-                    show_mode = 2 # 卸载模式
-                elif arg_str.startswith("disload"):
-                    arg_str = arg_str[7:].strip()
-                    show_mode = 2 # 卸载模式
-                elif arg_str.startswith("创建"):
-                    arg_str = arg_str[2:].strip()
-                    show_mode = 3 # 创建模式
-                elif arg_str.startswith("create"):
-                    arg_str = arg_str[6:].strip()
-                    show_mode = 3 # 创建模式
-                elif arg_str.startswith("导入"):
-                    arg_str = arg_str[2:].strip()
-                    show_mode = 4 # 导入模式
-                elif arg_str.startswith("import"):
-                    arg_str = arg_str[6:].strip()
-                    show_mode = 4 # 导入模式
-                elif arg_str.startswith("列表"):
-                    arg_str = arg_str[2:].strip()
-                    show_mode = 5 # 显示模式
-                elif arg_str.startswith("list"):
-                    arg_str = arg_str[4:].strip()
-                    show_mode = 5 # 显示模式
         assert (not should_proc) or mode
         hint = (mode, arg_str, show_mode)
         return should_proc, should_pass, hint
@@ -529,7 +531,7 @@ class QueryCommand(UserCommandBase):
             if homebrew_database not in CONNECTED_QUERY_DATABASES:
                 homebrew_path:str = DATA_PATH + "/QueryData/Homebrew/" + homebrew_database + ".db"
                 if os.path.exists(homebrew_path):
-                    connect_query_database(homebrew_database)
+                    connect_query_database(homebrew_path)
                 else:
                     homebrew_database = ""
         else:
@@ -679,6 +681,10 @@ class QueryCommand(UserCommandBase):
         elif mode == "database":
             if arg_str.strip() == "" and show_mode != 5:
                 show_mode = 0
+            # 非管理员/骰主不允许进行数据库管理（加载/卸载/创建/导入），但允许查看列表
+            if show_mode in (1, 2, 3, 4) and meta.permission < 3:
+                feedback = "权限不足：需要3级权限（骰管理/骰主）才能管理查询数据库。"
+                return [BotSendMsgCommand(self.bot.account, feedback, [port])]
             if show_mode == 1:# 加载数据库
                 database = arg_str.strip().upper()
                 database_file_path = DATA_PATH+"/QueryData/"+database+".db"

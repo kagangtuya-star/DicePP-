@@ -61,9 +61,7 @@ def create_empty_sqlite_database(path: str):
 def create_query_database(path: str) -> str:
     """创建一个新的查询数据库"""
     create_parent_dir(path)  # 若父文件夹不存在需先创建父文件夹
-    db = os.path.basename(path)[:-3]
     if create_empty_sqlite_database(path):
-        CONNECTED_QUERY_DATABASES[db] = sqlite3.connect(path)
         return f"已创建{path}"
     else:
         return f"创建{path}时遇到错误: 权限不足"
@@ -72,21 +70,24 @@ def connect_query_database(path: str) -> str:
     """连接查询数据库"""
     error_info: List[str] = []
     if path.endswith(".db"):
-        if os.path.exists(path):  # 存在数据库则尝试连接数据库
-            db = os.path.basename(path)[:-3]
-            if db not in CONNECTED_QUERY_DATABASES.keys():
-                try:
-                    CONNECTED_QUERY_DATABASES[db] = sqlite3.connect(path)
-                    DATABASE_CURSOR[db] = CONNECTED_QUERY_DATABASES[db].cursor()
-                    CONNECTED_QUERY_DATABASES[db].row_factory = sqlite3.Row
-                    CONNECTED_QUERY_DATABASES[db].create_function('regexp', 2, regexp)
-                except PermissionError:
-                    error_info.append(f"读取{path}时遇到错误: 权限不足")
-                    return
-            else:  # 已加载
-                error_info.append(f"已加载过该数据库。")
-        else:  # 创建一个模板文件
-            error_info.append(create_query_database(path))
+        if not os.path.exists(path):
+            # 注意：这里不再“自动创建空库”，避免用户误以为已加载到真实数据
+            error_info.append(f"未找到数据库文件: {path}")
+            return "\n".join(error_info)
+        # 存在数据库则尝试连接数据库
+        db = os.path.basename(path)[:-3]
+        if db in CONNECTED_QUERY_DATABASES.keys():  # 已加载
+            error_info.append("已加载过该数据库。")
+            return "\n".join(error_info)
+        try:
+            conn = sqlite3.connect(path)
+            conn.row_factory = sqlite3.Row
+            conn.create_function("regexp", 2, regexp)
+            CONNECTED_QUERY_DATABASES[db] = conn
+            DATABASE_CURSOR[db] = conn.cursor()
+        except PermissionError:
+            error_info.append(f"读取{path}时遇到错误: 权限不足")
+            return "\n".join(error_info)
     elif path.endswith(".db-journal"): #跳过他，无需处理
         return "\n".join(error_info)
     elif path:  # 是文件夹
@@ -95,7 +96,9 @@ def connect_query_database(path: str) -> str:
                 inner_paths = os.listdir(path)
                 for inner_path in inner_paths:
                     inner_path = os.path.join(path, inner_path)
-                    error_info.append(connect_query_database(inner_path))
+                    child_info = connect_query_database(inner_path)
+                    if child_info:
+                        error_info.append(child_info)
             except FileNotFoundError as e:  # 文件夹不存在
                 error_info.append(f"读取{path}时遇到错误: {e}")
         else:  # 创建空文件夹
@@ -111,7 +114,7 @@ def disconnect_query_database(db: str) -> None:
 def regexp(pattern: str, input: str):
     """SQL用的正则表达式公式函数"""
     p = re.compile(str(pattern),re.I)
-    return bool(re.search(p, input))
+    return bool(re.search(p, input or ""))
         
 def regexp_normalize(string: str) -> str:
     """用于将正则表达式的任何公式文本改为原义"""
