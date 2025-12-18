@@ -415,6 +415,11 @@ class Bot:
         if self.proxy:
             from core.command import BotSendMsgCommand
             from core.localization import LOC_LOGIN_NOTICE
+            from module.common.master_command import DC_CTRL
+            
+            # 检查是否开启了静默模式
+            is_silent = self.data_manager.get_data(DC_CTRL, ["silent_startup"], False)
+            
             feedback = self.loc_helper.format_loc_text(LOC_LOGIN_NOTICE)
             if feedback and feedback != "$":
                 feedback_prefix = ""
@@ -423,18 +428,22 @@ class Bot:
                         feedback_prefix += init_info[i]+"\n"
                 feedback = f"{feedback_prefix}\n{feedback}"
                 dice_log(feedback)
-                # 给上次reboot的Admin或Master汇报
-                from module.common.master_command import DC_CTRL
-                rebooter = self.data_manager.get_data(DC_CTRL, ["rebooter"], "")
-                if rebooter != "":
-                    self.data_manager.set_data(DC_CTRL, ["rebooter"], "")
-                    command = BotSendMsgCommand(self.account, feedback, [PrivateMessagePort(rebooter)])
-                    await self.proxy.process_bot_command(command)
-                # 如果不存在reboot者，则给所有Master汇报
-                else :
-                    for master in self.cfg_helper.get_config(CFG_MASTER):
-                        command = BotSendMsgCommand(self.account, feedback, [PrivateMessagePort(master)])
+                
+                # 如果开启了静默模式，跳过发送通知
+                if is_silent:
+                    dice_log("[Bot] 静默模式已开启，跳过发送启动通知")
+                else:
+                    # 给上次reboot的Admin或Master汇报
+                    rebooter = self.data_manager.get_data(DC_CTRL, ["rebooter"], "")
+                    if rebooter != "":
+                        self.data_manager.set_data(DC_CTRL, ["rebooter"], "")
+                        command = BotSendMsgCommand(self.account, feedback, [PrivateMessagePort(rebooter)])
                         await self.proxy.process_bot_command(command)
+                    # 如果不存在reboot者，则给所有Master汇报
+                    else :
+                        for master in self.cfg_helper.get_config(CFG_MASTER):
+                            command = BotSendMsgCommand(self.account, feedback, [PrivateMessagePort(master)])
+                            await self.proxy.process_bot_command(command)
             else:
                 dice_log(init_info)
 
