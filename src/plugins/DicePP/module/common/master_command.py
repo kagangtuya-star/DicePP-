@@ -20,6 +20,9 @@ LOC_SEND_TARGET = "master_send_to_target"
 LOC_LOG_CLEAN = "master_log_clean"
 LOC_LOG_CLEAN_DONE = "master_log_clean_done"
 LOC_LOG_STATUS_DONE = "master_log_status_done"
+LOC_SILENT_ON = "master_silent_on"
+LOC_SILENT_OFF = "master_silent_off"
+LOC_SILENT_STATUS = "master_silent_status"
 
 DC_CTRL = "master_control"
 
@@ -48,6 +51,9 @@ class MasterCommand(UserCommandBase):
         bot.loc_helper.register_loc_text(LOC_LOG_CLEAN, "开始清理日志文件...", "Master清理日志时开始提示")
         bot.loc_helper.register_loc_text(LOC_LOG_CLEAN_DONE, "日志清理完成，共删除 {count} 个文件。", "Master清理日志完成提示")
         bot.loc_helper.register_loc_text(LOC_LOG_STATUS_DONE, "日志状态：文件 {count} 个，总计 {size_kb} KB。最近文件：\n{recent}", "Master查看日志状态")
+        bot.loc_helper.register_loc_text(LOC_SILENT_ON, "已开启静默模式，启动时将不再发送通知给管理员。", "启用静默模式提示")
+        bot.loc_helper.register_loc_text(LOC_SILENT_OFF, "已关闭静默模式，启动时将正常发送通知给管理员。", "关闭静默模式提示")
+        bot.loc_helper.register_loc_text(LOC_SILENT_STATUS, "当前静默模式: {status}", "静默模式状态查询")
 
     def can_process_msg(self, msg_str: str, meta: MessageMetaData) -> Tuple[bool, bool, Any]:
         should_proc: bool = False
@@ -226,6 +232,19 @@ class MasterCommand(UserCommandBase):
                 )
             else:
                 feedback = "无法获取内存信息，可能未安装 psutil"
+        elif arg_str == "silent" or arg_str == "silent status":
+            # 查询静默模式状态
+            is_silent = self.bot.data_manager.get_data(DC_CTRL, ["silent_startup"], False)
+            status_text = "开启" if is_silent else "关闭"
+            feedback = self.format_loc(LOC_SILENT_STATUS, status=status_text)
+        elif arg_str == "silent on":
+            # 开启静默模式
+            self.bot.data_manager.set_data(DC_CTRL, ["silent_startup"], True)
+            feedback = self.format_loc(LOC_SILENT_ON)
+        elif arg_str == "silent off":
+            # 关闭静默模式
+            self.bot.data_manager.set_data(DC_CTRL, ["silent_startup"], False)
+            feedback = self.format_loc(LOC_SILENT_OFF)
         else:
             feedback = self.get_help("m", meta)
 
@@ -240,7 +259,8 @@ class MasterCommand(UserCommandBase):
              ".m send 命令骰娘发送信息\n" \
              ".m memory 查看内存状态\n" \
              ".m log-clean 清空日志目录\n" \
-             ".m log status 查看日志状态"
+             ".m log status 查看日志状态\n" \
+             ".m silent on/off 开启/关闭静默模式（启动时不发送通知）"
         if keyword.startswith("m"):
             if keyword.endswith("reboot"):
                 return ".m reboot 立即重启\n.m reboot info 查看环境\n.m reboot delay 60 延迟60秒重启"
