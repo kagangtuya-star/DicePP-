@@ -3,6 +3,7 @@ NoneBot API https://v2.nonebot.dev/api/plugin.html
 """
 from typing import List, Dict, Optional, Any
 import asyncio
+import random
 from fastapi import FastAPI
 
 import nonebot
@@ -40,6 +41,11 @@ request_matcher = on_request()
 
 all_bots: Dict[str, DicePPBot] = {}
 _group_folder_cache: Dict[str, Dict[str, Optional[str]]] = {}
+SEND_MSG_DELAY_RANGE = (0.6, 1.0)
+
+
+async def _sleep_send_delay() -> None:
+    await asyncio.sleep(random.uniform(*SEND_MSG_DELAY_RANGE))
 
 
 def convert_group_info(nb_group_info: Dict) -> GroupInfo:
@@ -70,6 +76,7 @@ class NoneBotClientProxy(ClientProxy):
             if isinstance(command, BotSendMsgCommand):
                 for target in command.targets:
                     if target.group_id:
+                        await _sleep_send_delay()
                         await self.bot.send_group_msg(group_id=int(target.group_id), message=CQMessage(command.msg))
                         # 记录到群日志
                         try:
@@ -77,12 +84,14 @@ class NoneBotClientProxy(ClientProxy):
                         except Exception:
                             pass
                     else:
+                        await _sleep_send_delay()
                         await self.bot.send_private_msg(user_id=int(target.user_id), message=CQMessage(command.msg))
             elif isinstance(command, BotLeaveGroupCommand):
                 await self.bot.set_group_leave(group_id=int(command.target_group_id))
             elif isinstance(command, BotSendForwardMsgCommand):
                 try:
                     for target in command.targets:
+                        await _sleep_send_delay()
                         await self.bot.call_api("send_group_forward_msg", group_id=int(target.group_id), messages=command.msg_json_list)
                         # 合并转发中的每条子消息分别记录（保持原顺序）
                         try:
@@ -92,18 +101,22 @@ class NoneBotClientProxy(ClientProxy):
                             pass
                 except:
                     if target.group_id:
+                        await _sleep_send_delay()
                         await self.bot.send_group_msg(group_id=int(target.group_id), message="合并转发失败！")
                         for target in command.targets:
                             for msg in command.msg:
+                                await _sleep_send_delay()
                                 await self.bot.send_group_msg(group_id=int(target.group_id), message=CQMessage(msg))
                                 try:
                                     append_log_record(all_bots[self.bot.self_id], target.group_id, str(self.bot.self_id), all_bots[self.bot.self_id].get_nickname(self.bot.self_id, target.group_id) or "Bot", msg)
                                 except Exception:
                                     pass
                     else:
+                        await _sleep_send_delay()
                         await self.bot.send_group_msg(user_id=int(target.used_id), message="合并转发失败！")
                         for target in command.targets:
                             for msg in command.msg:
+                                await _sleep_send_delay()
                                 await self.bot.send_private_msg(user_id=int(target.user_id), message=CQMessage(msg))
             elif isinstance(command, BotSendFileCommand):
                 for target in command.targets:
@@ -157,9 +170,11 @@ class NoneBotClientProxy(ClientProxy):
                             except Exception:
                                 pass
                         else:
+                            await _sleep_send_delay()
                             await self.bot.send_group_msg(group_id=int(target.group_id), message="文件发送失败！")
                     except Exception as ex_outer:
                         dice_log(f"[OneBot][Upload][Unexpected] group={target.group_id} file={real_name} err={ex_outer}")
+                        await _sleep_send_delay()
                         await self.bot.send_group_msg(group_id=int(target.group_id), message="文件发送失败！")
             elif isinstance(command, BotDelayCommand):
                 await asyncio.sleep(command.seconds)
